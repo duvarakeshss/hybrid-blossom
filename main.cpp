@@ -1,108 +1,85 @@
+/// \file main.cpp
+/// \brief CLI entry point for hybrid maximum-weight matching.
+///
+/// Usage:
+///   ./hybrid_blossom --mtx <graph.mtx> <num_threads>
+///   ./hybrid_blossom <rowOffsets.txt> <columnIndices.txt> <num_threads>
+
 #include "hybrid_blossom.h"
 #include <iostream>
-#include <fstream>
-#include <vector>
 #include <string>
+#include <vector>
 #include <chrono>
-#include <cstdlib>
-#include <sstream>
-
-/// \brief Read a file of integers into a vector
-void read_ints(const std::string& path, std::vector<int>& out) {
-    std::ifstream f(path);
-    if (!f) { std::cerr << "Cannot open " << path << "\n"; std::exit(1); }
-    int v;
-    while (f >> v) out.push_back(v);
-}
-
-/// \brief Build edge weights from CSR arrays
-///
-/// The CSR format: rowOffsets array, columnIndices array.
-/// Each edge appears twice (once per direction).
-/// We assign weight 1 to each edge.
-void build_unweighted(const std::vector<int>& rowOffsets,
-                      const std::vector<int>& columnIndices,
-                      std::vector<int>& edgeWeights) {
-    edgeWeights.assign(columnIndices.size() / 2, 1);
-}
-
-/// \brief Build CSR from .mtx file (with edge weights)
-///
-/// Format: n m
-///         u v w
-///         ...
-void read_mtx(const std::string& path,
-              std::vector<int>& rowOffsets,
-              std::vector<int>& columnIndices,
-              std::vector<int>& edgeWeights) {
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        std::cerr << "Cannot open " << path << "\n";
-        std::exit(1);
-    }
-
-    int n, m;
-    f >> n >> m;
-
-    // Build adjacency list
-    std::vector<std::vector<int>> adj(n);
-    std::vector<int> weights;
-
-    for (int i = 0; i < m; ++i) {
-        int u, v, w;
-        f >> u >> v >> w;
-        adj[u].push_back(v);
-        adj[v].push_back(u);
-        weights.push_back(w);
-    }
-
-    // Build CSR
-    rowOffsets.assign(n + 1, 0);
-    for (int i = 0; i < n; ++i) {
-        rowOffsets[i + 1] = rowOffsets[i] + static_cast<int>(adj[i].size());
-        for (int v : adj[i]) {
-            columnIndices.push_back(v);
-        }
-    }
-
-    edgeWeights = weights;
-}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
-                  << "  " << argv[0] << " <rowOffsets.txt> <columnIndices.txt> <num_threads>\n"
-                  << "  " << argv[0] << " --mtx <graph.mtx> <num_threads>\n";
+                  << "  " << argv[0] << " --mtx <graph.mtx> <num_threads>\n"
+                  << "  " << argv[0] << " <rowOffsets.txt> <columnIndices.txt> <num_threads>\n";
         return 1;
     }
 
-    int num_threads = 4;
-    std::vector<int> rowOffsets, columnIndices, edgeWeights;
+    std::vector<int> rowOffsets, colIndices, arcWeights;
+    int numThreads = 4;
+    bool ok = false;
 
     if (std::string(argv[1]) == "--mtx") {
-        // Read weighted graph from .mtx
-        read_mtx(argv[2], rowOffsets, columnIndices, edgeWeights);
-        num_threads = (argc > 3) ? std::stoi(argv[3]) : 4;
+        if (argc < 4) {
+            std::cerr << "Missing num_threads\n";
+            return 1;
+        }
+        auto t0 = std::chrono::steady_clock::now();
+        ok = read_mtx(argv[2], rowOffsets, colIndices, arcWeights);
+        auto t1 = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count();
+        std::cout << "Graph loaded in " << ms << "ms\n";
+        numThreads = std::stoi(argv[3]);
     } else {
-        // Read CSR from rowOffsets + columnIndices files
-        read_ints(argv[1], rowOffsets);
-        read_ints(argv[2], columnIndices);
-        num_threads = (argc > 3) ? std::stoi(argv[3]) : 4;
-        build_unweighted(rowOffsets, columnIndices, edgeWeights);
+        if (argc < 4) {
+            std::cerr << "Missing num_threads\n";
+            return 1;
+        }
+        auto t0 = std::chrono::steady_clock::now();
+        ok = read_csr_files(argv[1], argv[2], rowOffsets, colIndices, arcWeights);
+        auto t1 = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count();
+        std::cout << "Graph loaded in " << ms << "ms\n";
+        numThreads = std::stoi(argv[3]);
     }
 
-    int n = static_cast<int>(rowOffsets.size()) - 1;
-    std::cout << "Graph: " << n << " vertices, "
-              << edgeWeights.size() << " weighted edges\n";
+    if (!ok) return 1;
 
-    // Run
-    std::vector<int> M;
-    auto start = std::chrono::steady_clock::now();
-    hybrid_blossom_maximum_weight_matching(rowOffsets, columnIndices, edgeWeights, M, num_threads);
-    auto end = std::chrono::steady_clock::now();
+    int n = (int)rowOffsets.size() - 1;
+    int m = (int)colIndices.size() / 2;
+    std::cout << "Graph: " << n << " vertices, " << m << " edges, "
+              << numThreads << " threads\n";
 
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "Total: " << ms << "ms\n";
+    // Run hybrid solver
+    MatchingResult res = hybrid_blossom_maximum_weight_matching(
+        rowOffsets, colIndices, arcWeights, numThreads);
+
+    // Print instrumentation
+    std::cout << "\n--- Results ---\n";
+    std::cout << "Final cardinality:    " << res.final_cardinality << "\n";
+    std::cout << "Final weight:         " << res.weight << "\n";
+    std::cout << "Valid matching:       " << (res.valid ? "YES" : "NO") << "\n";
+    std::cout << "\n--- Timing ---\n";
+    std::cout << "X-Blossom phase:      " << res.time_xblossom_ms  << "ms\n";
+    std::cout << "Weighted phase:       " << res.time_weighted_ms  << "ms\n";
+    std::cout << "Validation:           " << res.time_validate_ms  << "ms\n";
+    std::cout << "Total:                " << res.time_total_ms     << "ms\n";
+    std::cout << "\n--- Algorithm stats ---\n";
+    std::cout << "Initial cardinality:  " << res.initial_cardinality << "\n";
+    std::cout << "Initial weight:       " << res.initial_weight << "\n";
+    std::cout << "Augmentations:        " << res.num_augmentations << "\n";
+    std::cout << "Blossom contractions: " << res.num_blossom_contractions << "\n";
+    std::cout << "Blossom expansions:   " << res.num_blossom_expansions << "\n";
+    std::cout << "Dual updates:         " << res.num_dual_updates << "\n";
+
+    if (!res.valid) {
+        std::cerr << "\nERROR: matching is INVALID\n";
+        return 2;
+    }
 
     return 0;
 }
