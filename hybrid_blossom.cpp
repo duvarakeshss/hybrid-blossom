@@ -174,7 +174,7 @@ bool validate_matching(
 }
 
 // ===========================================================
-//  X-Blossom warm-start (parallel BFS)
+//  X-Blossom (parallel BFS)
 // ===========================================================
 
 static void run_xblossom_phase(
