@@ -93,6 +93,14 @@ std::vector<int> find_path_from_table(
     return path;
 }
 
+// NOTE: these three helpers used to be marked "#pragma omp parallel for"
+// with no -fopenmp anywhere in the build (CMakeLists.txt / the g++
+// command in test_exact.cpp's header comment both omit it). An
+// unrecognized #pragma is not an error, so this compiled fine and *ran
+// correctly* -- but entirely serially, silently. They are rewritten here
+// using the same std::thread primitive as the rest of this file (and as
+// hybrid_blossom.cpp's mwm::MWMSolver) so the parallelism they claim is
+// the parallelism they deliver.
 void parallel_init_atomics(
         std::vector<std::atomic<int>>& select_tree,
         std::vector<std::atomic<int>>& select_match,
@@ -101,17 +109,21 @@ void parallel_init_atomics(
         int nodes,
         int num_threads) {
     int chunk = (nodes + num_threads - 1) / num_threads;
-#pragma omp parallel for
+    std::vector<std::thread> workers;
+    workers.reserve(num_threads);
     for (int t = 0; t < num_threads; ++t) {
-        int start = t * chunk;
-        int end = std::min(start + chunk, nodes);
-        for (int i = start; i < end; ++i) {
-            select_tree[i] = 0;
-            select_match[i] = 0;
-            select_blossom[i] = 0;
-            path_table[i].clear();
-        }
+        workers.emplace_back([&, t]() {
+            int start = t * chunk;
+            int end = std::min(start + chunk, nodes);
+            for (int i = start; i < end; ++i) {
+                select_tree[i] = 0;
+                select_match[i] = 0;
+                select_blossom[i] = 0;
+                path_table[i].clear();
+            }
+        });
     }
+    for (auto& th : workers) th.join();
 }
 
 void parallel_find_exposed(
@@ -121,17 +133,20 @@ void parallel_find_exposed(
     exposed.clear();
     int n = static_cast<int>(M.size());
     int chunk = (n + num_threads - 1) / num_threads;
-    std::mutex exp_mutex;
-    std::vector<std::vector<int>> local(n);
+    std::vector<std::vector<int>> local(num_threads);
 
-#pragma omp parallel for
+    std::vector<std::thread> workers;
+    workers.reserve(num_threads);
     for (int t = 0; t < num_threads; ++t) {
-        int start = t * chunk;
-        int end = std::min(start + chunk, n);
-        for (int i = start; i < end; ++i) {
-            if (M[i] == -1) local[t].push_back(i);
-        }
+        workers.emplace_back([&, t]() {
+            int start = t * chunk;
+            int end = std::min(start + chunk, n);
+            for (int i = start; i < end; ++i) {
+                if (M[i] == -1) local[t].push_back(i);
+            }
+        });
     }
+    for (auto& th : workers) th.join();
     for (auto& l : local)
         exposed.insert(exposed.end(), l.begin(), l.end());
 }
@@ -143,16 +158,20 @@ void parallel_init_exposed_vector(
         int num_threads) {
     int n = static_cast<int>(exposed.size());
     int chunk = (n + num_threads - 1) / num_threads;
-#pragma omp parallel for
+    std::vector<std::thread> workers;
+    workers.reserve(num_threads);
     for (int t = 0; t < num_threads; ++t) {
-        int start = t * chunk;
-        int end = std::min(start + chunk, n);
-        for (int i = start; i < end; ++i) {
-            int v = exposed[i];
-            is_even[v] = 1;
-            belongs[v] = v;
-        }
+        workers.emplace_back([&, t]() {
+            int start = t * chunk;
+            int end = std::min(start + chunk, n);
+            for (int i = start; i < end; ++i) {
+                int v = exposed[i];
+                is_even[v] = 1;
+                belongs[v] = v;
+            }
+        });
     }
+    for (auto& th : workers) th.join();
 }
 
 void parallel_update_matching(

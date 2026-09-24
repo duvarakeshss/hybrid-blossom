@@ -29,6 +29,12 @@ add_executable(test_exact
     ${CORE_SOURCES}
 )
 
+# ---------- Serial-vs-parallel benchmark binary ----------
+add_executable(benchmark
+    benchmark.cpp
+    ${CORE_SOURCES}
+)
+
 # ---------- Enable CTest ----------
 enable_testing()
 add_test(NAME ExactTests COMMAND test_exact)
